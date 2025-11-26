@@ -1,130 +1,108 @@
-Here’s a complete **README.md** you can drop into your repo **AI-AGENTS-WITH-MCP**.
-I’ve woven in the **uv setup**, prerequisites (Python 3.12+), and structured it around your three scenarios + Streamlit app.
+# mtb-hackdays-agents
 
----
+**Building AI Agents with Model Context Protocol (MCP), Amazon Bedrock, Strands, and Athena**
 
-# AI-AGENTS-WITH-MCP
+This repository is based on the original *"AI-AGENTS-WITH-MCP"* examples and extends them with a **Moneytree Hackdays demo** that:
 
-**Building AI Agents with Model Context Protocol (MCP) and Amazon Bedrock**
+- Exposes **AWS Athena** as a read-only MCP server
+- Wraps that server with a **Strands Agent** backed by **Amazon Bedrock (Claude 3)**
+- Lets you ask natural-language questions like _"Show me 5 wifi transactions"_ or _"Which tables mention salary?"_ and get SQL-backed answers
 
-This repository contains a set of **end-to-end examples** demonstrating how to build decoupled, agentic AI systems using:
-
-* **Amazon Bedrock** (Anthropic Claude models)
-* **Model Context Protocol (MCP)** for tool decoupling
-* **Strands** framework for agent orchestration
-* **uv** for fast Python environment + dependency management
-* **Streamlit** for a real-world demo with Zerodha Kite MCP
-
-It follows the concepts from the article *“Building AI Agents with MCP and Amazon Bedrock: An Implementation Guide”* and showcases:
+## What This Demonstrates
 
 1. **Baseline agents** with Bedrock models
 2. **Local tool integration**
 3. **Single MCP server connection**
 4. **Multi-MCP orchestration**
-5. **Custom MCP server** (Calculator example)
-6. **Streamlit Kite portfolio assistant**
+5. **Custom MCP servers**:
+   - Calculator example (from the original article)
+   - **Moneytree Athena server + Strands Agent** (Hackdays scenario)
+6. A **Streamlit portfolio assistant** driven by MCP
 
 ---
 
 ## 🚀 Prerequisites
 
-* **Python 3.12+** installed on your system
-* **uv** (fast Python package installer & runner)
+- **Python 3.12+**
+- Optionally **uv** for fast Python env + dependency management
+- For the Athena demo:
+  - AWS credentials with access to Athena + S3 query results
+  - Access to **Amazon Bedrock** in the desired region (e.g. `ap-northeast-1`)
 
-Install `uv`:
+Install `uv` (optional but recommended):
 
 ```bash
 pip install uv
-```
-
-Verify:
-
-```bash
 uv --version
 ```
 
----
+## 🛠️ Setup
 
-## 🛠️ Setup Instructions
-
-Clone the repo:
+### Clone the repo:
 
 ```bash
-git clone https://github.com/<your-username>/AI-AGENTS-WITH-MCP.git
-cd AI-AGENTS-WITH-MCP
+git clone https://github.com/<your-username>/mtb-hackdays-agents.git
+cd mtb-hackdays-agents
 ```
 
-Create a Python 3.12 virtual environment with **uv**:
+### Create a Python 3.12 virtualenv (with uv):
 
 ```bash
 uv venv --python 3.12
+source .venv/bin/activate    # Linux/macOS
+# .venv\Scripts\activate     # Windows PowerShell
 ```
 
-Activate the environment:
-
-**Linux/macOS**
-
-```bash
-source .venv/bin/activate
-```
-
-**Windows (PowerShell)**
-
-```powershell
-.venv\Scripts\activate
-```
-
-Install dependencies:
+### Install dependencies:
 
 ```bash
 uv pip install -r requirements.txt
+# or: pip install -r requirements.txt
 ```
-
----
 
 ## 📂 Project Structure
 
 ```
-AI-AGENTS-WITH-MCP/
+mtb-hackdays-agents/
 ├── README.md
 ├── requirements.txt
-├── scenario1_single_server/   # Scenario 1: Baseline agent + local tool + doc MCP server
+├── scenario1_single_server/      # Scenario 1: Baseline agent + local tool + doc MCP server
 │   ├── baseline_agent.py
 │   ├── agent_with_local_tool.py
 │   └── agent_with_doc_mcp.py
-├── scenario2_multi_server/    # Scenario 2: Multi-MCP orchestration
+├── scenario2_multi_server/       # Scenario 2: Multi-MCP orchestration
 │   └── multi_server_agent.py
-├── scenario3_custom_server/   # Scenario 3: Custom MCP server
-│   ├── calculator_server.py
-│   └── calculator_client.py
-├── kite_streamlit_app/        # Real-world Streamlit + Kite MCP demo
+├── scenario3_custom_server/      # Scenario 3: Custom MCP servers
+│   ├── calculator_server.py      # Original calculator MCP example
+│   ├── calculator_client.py
+│   ├── mtb_athena_server.py      # NEW: Athena MCP server (read-only)
+│   ├── mtb_athena_client.py      # NEW: Simple MCP client / smoke test
+│   └── mtb_athena_strands_agent.py  # NEW: Strands Agent + Bedrock + Athena MCP
+├── kite_streamlit_app/           # Streamlit + Kite MCP demo
 │   └── streamlit_app.py
-└── utils/                     # Shared helpers
+└── utils/
     └── streamlit_helpers.py
 ```
-
----
 
 ## 📖 Scenarios
 
 ### 1. Single MCP Server
 
-* **Baseline agent** with Claude (Bedrock)
-* Add a **local tool** (e.g., Python execution)
-* Connect to AWS Documentation MCP server (`awslabs.aws-documentation-mcp-server`)
+Baseline examples using a single MCP server:
 
-Run:
+- Bedrock-backed agent
+- Local tool (e.g. Python execution)
+- AWS Documentation MCP server (awslabs.aws-documentation-mcp-server)
+
+Run (example):
 
 ```bash
 python scenario1_single_server/agent_with_doc_mcp.py
 ```
 
----
-
 ### 2. Multi-MCP Orchestration
 
-Agent with access to **AWS Documentation** + **AWS Pricing MCP servers**.
-Use case: Generate SageMaker fine-tuning research report.
+Agent with access to multiple MCP servers (e.g. AWS Docs + AWS Pricing) to answer richer questions like "Generate a SageMaker fine-tuning research report".
 
 Run:
 
@@ -132,11 +110,9 @@ Run:
 python scenario2_multi_server/multi_server_agent.py
 ```
 
----
+### 3. Custom MCP Servers
 
-### 3. Custom MCP Server
-
-Example of building your own MCP server (Calculator):
+#### 3.1 Calculator MCP (original example)
 
 Start server:
 
@@ -150,11 +126,111 @@ Run client:
 python scenario3_custom_server/calculator_client.py
 ```
 
----
+#### 3.2 Moneytree Athena MCP + Strands Agent (Hackdays)
+
+This is the main Hackdays demo:
+
+- `mtb_athena_server.py` exposes read-only Athena tools via MCP:
+  - `list_tables(database?)`
+  - `describe_table(database, table)`
+  - `run_readonly_query(database, sql, max_rows=50)`
+- `mtb_athena_client.py` is a small MCP client to verify everything works
+- `mtb_athena_strands_agent.py` wraps those tools in a Strands Agent that:
+  - Uses Amazon Bedrock (Claude 3)
+  - Generates and executes SQL via the Athena MCP tools
+  - Explains the results in natural language
+
+##### 3.2.1 Configure environment
+
+Required environment variables (with sensible defaults):
+
+```bash
+export MTB_ATHENA_WORKGROUP="DataLakeWorkgroup-v3-production"
+export MTB_ATHENA_OUTPUT_LOCATION="s3://jp-data-lake-athena-query-results-production/DataLakeWorkgroup-v3-production/"
+export MTB_ATHENA_DEFAULT_DB="lakehouse_experimental_jp_production"
+```
+
+Bedrock model configuration:
+
+```bash
+# Default is Claude 3 Haiku on Bedrock:
+export MTB_BEDROCK_MODEL_ID="anthropic.claude-3-haiku-20240307-v1:0"
+
+# Optional: if you have an inference profile (e.g. for Sonnet):
+export MTB_BEDROCK_INFERENCE_PROFILE_ARN="arn:aws:bedrock:ap-northeast-1:...:inference-profile/..."
+```
+
+Make sure your AWS credentials + region are configured so that:
+
+- Athena can run queries in the chosen workgroup
+- Bedrock calls succeed in the target region (e.g. ap-northeast-1)
+
+##### 3.2.2 Smoke test: MCP + Athena
+
+Run the basic MCP client:
+
+```bash
+python scenario3_custom_server/mtb_athena_client.py
+```
+
+This will:
+
+1. Start mtb_athena_server.py as an MCP server over stdio
+2. Initialize the MCP session
+3. List tables in lakehouse_experimental_jp_production
+4. Run a sample SELECT * FROM transactions LIMIT 5
+
+You should see a small JSON snippet of transactions if everything is wired up.
+
+##### 3.2.3 Strands Agent: natural-language questions over Athena
+
+Run the interactive agent:
+
+```bash
+python scenario3_custom_server/mtb_athena_strands_agent.py
+```
+
+You'll see a prompt like:
+
+```
+🚀 Athena Strands Agent Ready!
+Type questions about your data, for example:
+  • 'Show me 5 wifi transactions'
+  • 'Which tables mention salary?'
+  • 'Describe the transactions table'
+  • 'Generate SQL to find negative transactions in transactions'
+Type 'exit' to quit.
+```
+
+Example queries:
+
+- **Wifi transactions**: `Show me 5 wifi transactions`
+- **Salary schema discovery**: `Which tables mention salary?`
+- **Top paying companies**: `The lakehouse_experimental_jp_production database contains several tables related to salary data, including the "250911_ai459_pbo_salary_capture_dataset_complete_gold" table. This table appears to have comprehensive salary information for different companies, including average total compensation, salary, and bonus amounts. Given this, what are the top 5 most generously paying companies?`
+
+The system prompt is tuned to:
+
+- **Treat Athena as read-only**:
+  - Only SELECT / SHOW / DESCRIBE are allowed
+  - The MCP server rejects any mutating SQL
+
+- **Discover schemas and relationships using**:
+  - list_tables
+  - describe_table
+
+- **Infer joins using shared keys** (e.g. account_id, user_id, guest_id) and then build SQL that:
+  - Uses small samples (LIMIT 5 / LIMIT 50)
+  - Quotes table names starting with digits:
+
+```sql
+SELECT *
+FROM "250911_ai459_pbo_salary_capture_dataset_complete_gold"
+LIMIT 5;
+```
 
 ### 4. Streamlit Kite Portfolio Assistant
 
-Interactive app integrating with **Kite MCP** and OpenAI GPT-4o.
+Interactive app integrating Kite MCP and OpenAI GPT-4o.
 
 Run:
 
@@ -162,44 +238,24 @@ Run:
 streamlit run kite_streamlit_app/streamlit_app.py
 ```
 
-Enter your **OpenAI API key** in the sidebar, log in to Zerodha Kite when prompted, and start asking portfolio questions.
+Enter your OpenAI API key in the sidebar, log in to Zerodha Kite when prompted, and start asking portfolio questions.
 
-📸 Example UI:
+## ⚡ Using uvx for MCP servers
 
-![Kite MCP Streamlit UI](kite_streamlit_app/image.png)
-
----
-
-## ⚡ Using `uvx` for MCP servers
-
-MCP servers are launched using `uvx`. Example:
+Some MCP servers can be launched using uvx. Example:
 
 ```bash
 uvx --from awslabs.aws-documentation-mcp-server@latest awslabs.aws-documentation-mcp-server.exe
 ```
 
-Your agent code uses this under the hood.
-
----
+The agent examples in this repo demonstrate how to connect to those servers programmatically.
 
 ## 📚 Learn More
 
-* [Model Context Protocol (MCP)](https://modelcontextprotocol.io)
-* [Amazon Bedrock](https://aws.amazon.com/bedrock/)
-* [Strands](https://pypi.org/project/strands-agents/)
-
----
-
-## ✍️ Author & Articles
-
-This repo accompanies the Medium article:
-➡️ *“Building AI Agents with MCP and Amazon Bedrock: An Implementation Guide”*
-
-Follow-up post on LinkedIn coming soon 🚀
-
----
+- [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
+- [Amazon Bedrock](https://aws.amazon.com/bedrock/)
+- [Strands (Python SDK)](https://github.com/strandslabs/strands)
 
 ## 📜 License
 
 MIT License. Use freely with attribution.
-
