@@ -10,6 +10,7 @@ Tools:
 
 from typing import List, Dict, Any
 import os
+import re
 import time
 
 import boto3
@@ -39,17 +40,6 @@ DEFAULT_DATABASE = os.getenv(
 
 # Configurable timeout (seconds)
 DEFAULT_QUERY_TIMEOUT_SEC = int(os.getenv("MTB_ATHENA_QUERY_TIMEOUT_SEC", "180"))
-
-# Hard safety words (disallow mutations)
-FORBIDDEN_WORDS = [
-    "insert",
-    "update",
-    "delete",
-    "create",
-    "drop",
-    "alter",
-    "truncate",
-]
 
 # --------------------------------------------------------------------
 # Global MCP + Athena clients
@@ -119,6 +109,26 @@ def _get_rows_raw(query_id: str):
     columns = [c.get("VarCharValue") for c in header_row["Data"]]
     data = [[c.get("VarCharValue") for c in r["Data"]] for r in data_rows]
     return data, columns
+
+
+def is_safe_readonly_query(sql: str) -> tuple[bool, str | None]:
+    """
+    Check if SQL is safe read-only query.
+    Returns (is_safe, error_message)
+    """
+    sql_stripped = sql.strip().lower()
+    
+    # Must start with safe commands
+    safe_starts = ['select', 'show', 'describe', 'explain']
+    if not any(sql_stripped.startswith(start) for start in safe_starts):
+        return False, "Query must start with SELECT, SHOW, DESCRIBE, or EXPLAIN"
+    
+    # Check for forbidden keywords at word boundaries
+    forbidden_pattern = r'\b(?:insert|update|delete|create|drop|alter|truncate|grant|revoke)\b'
+    if re.search(forbidden_pattern, sql_stripped):
+        return False, "Query contains forbidden SQL keywords"
+        
+    return True, None
 
 
 # --------------------------------------------------------------------
@@ -205,15 +215,9 @@ async def run_readonly_query(
         sql:      SQL query (must be read-only)
         max_rows: max number of rows to return (default 50)
     """
-    lowered = sql.lower()
-    if any(word in lowered for word in FORBIDDEN_WORDS):
-        raise ValueError(
-            "Only read-only queries (SELECT/SHOW/DESCRIBE) are allowed. "
-            "Found one of: " + ", ".join(FORBIDDEN_WORDS)
-        )
-
-    if not lowered.strip().startswith("select"):
-        raise ValueError("Queries must start with SELECT for this demo.")
+    is_safe, error = is_safe_readonly_query(sql)
+    if not is_safe:
+        raise ValueError(error)
 
     print(
         f"[mtb_athena] run_readonly_query on {database} "
@@ -233,8 +237,7 @@ async def run_readonly_query(
     rows, columns = _get_rows_raw(qid)
     rows = rows[:max_rows]
 
-    return [dict(zip(columns, row)) for row in rows]
-
+    return [dict(zip(columns, row)) for row in rows]  
 
 # --------------------------------------------------------------------
 # Main entrypoint for MCP (STDIO transport)
