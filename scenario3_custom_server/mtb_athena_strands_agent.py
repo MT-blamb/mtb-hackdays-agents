@@ -10,7 +10,7 @@ from strands.agent import Agent
 from strands.models import BedrockModel
 from strands.tools.mcp import MCPClient
 
-DEFAULT_DB = "lakehouse_experimental_jp_production"
+DEFAULT_DB = "lakehouse_omoikane_streaming_jp_production"
 
 
 def build_bedrock_model() -> BedrockModel:

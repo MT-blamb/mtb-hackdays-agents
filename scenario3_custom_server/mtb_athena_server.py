@@ -15,28 +15,32 @@ import time
 import boto3
 from mcp.server.fastmcp import FastMCP
 
-# ---- Configuration ----
+# --------------------------------------------------------------------
+# Configuration
+# --------------------------------------------------------------------
 
 ATHENA_WORKGROUP = os.getenv(
     "MTB_ATHENA_WORKGROUP",
     "DataLakeWorkgroup-v3-production",
 )
+
 ATHENA_OUTPUT_LOCATION = os.getenv(
     "MTB_ATHENA_OUTPUT_LOCATION",
     "s3://jp-data-lake-athena-query-results-production/"
     "DataLakeWorkgroup-v3-production/",
 )
+
+# Default DB (override via env if needed)
 DEFAULT_DATABASE = os.getenv(
     "MTB_ATHENA_DEFAULT_DB",
-    "lakehouse_experimental_jp_production",
+    "lakehouse_omoikane_streaming_jp_production",
+    # or: "lakehouse_experimental_jp_production",
 )
 
-# Configurable timeout for Athena queries (seconds)
-DEFAULT_QUERY_TIMEOUT_SEC = int(
-    os.getenv("MTB_ATHENA_QUERY_TIMEOUT_SEC", "180")
-)
+# Configurable timeout (seconds)
+DEFAULT_QUERY_TIMEOUT_SEC = int(os.getenv("MTB_ATHENA_QUERY_TIMEOUT_SEC", "180"))
 
-# Words we do NOT allow in queries (safety)
+# Hard safety words (disallow mutations)
 FORBIDDEN_WORDS = [
     "insert",
     "update",
@@ -47,15 +51,26 @@ FORBIDDEN_WORDS = [
     "truncate",
 ]
 
+# --------------------------------------------------------------------
+# Global MCP + Athena clients
+# --------------------------------------------------------------------
+
 mcp = FastMCP("mtb_athena")
 athena = boto3.client("athena")
 
 
-# ---- Athena helpers ----
-
+# --------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------
 
 def _wait_for_query(query_id: str, timeout_sec: int | None = None) -> None:
-    """Poll Athena until query is SUCCEEDED or FAILED/CANCELLED."""
+    """
+    Poll Athena until query is SUCCEEDED or FAILED/CANCELLED.
+
+    Raises:
+        RuntimeError on FAILED/CANCELLED
+        TimeoutError on timeout
+    """
     timeout = timeout_sec or DEFAULT_QUERY_TIMEOUT_SEC
     start = time.time()
 
@@ -71,8 +86,7 @@ def _wait_for_query(query_id: str, timeout_sec: int | None = None) -> None:
             reason = status.get("StateChangeReason", "Unknown")
             raise RuntimeError(
                 f"Athena query {state}. "
-                f"QueryExecutionId={query_id}. "
-                f"Reason={reason}"
+                f"QueryExecutionId={query_id}. Reason={reason}"
             )
 
         if time.time() - start > timeout:
@@ -85,7 +99,14 @@ def _wait_for_query(query_id: str, timeout_sec: int | None = None) -> None:
 
 
 def _get_rows_raw(query_id: str):
-    """Return rows (excluding header) and column names."""
+    """
+    Return rows (excluding header) and column names.
+
+    Returns:
+        (data_rows, columns)
+            data_rows: List[List[str | None]]
+            columns:   List[str]
+    """
     resp = athena.get_query_results(QueryExecutionId=query_id)
     rows = resp["ResultSet"]["Rows"]
 
@@ -95,13 +116,14 @@ def _get_rows_raw(query_id: str):
     header_row = rows[0]
     data_rows = rows[1:]
 
-    columns = [c["VarCharValue"] for c in header_row["Data"]]
+    columns = [c.get("VarCharValue") for c in header_row["Data"]]
     data = [[c.get("VarCharValue") for c in r["Data"]] for r in data_rows]
     return data, columns
 
 
-# ---- MCP Tools ----
-
+# --------------------------------------------------------------------
+# MCP Tools
+# --------------------------------------------------------------------
 
 @mcp.tool()
 async def list_tables(database: str | None = None) -> List[str]:
@@ -117,16 +139,19 @@ async def list_tables(database: str | None = None) -> List[str]:
             "No database provided and MTB_ATHENA_DEFAULT_DB is not set."
         )
 
+    query = f"SHOW TABLES IN {db}"
+    print(f"[mtb_athena] list_tables: {query}")
+
     resp = athena.start_query_execution(
-        QueryString=f"SHOW TABLES IN {db}",
+        QueryString=query,
         QueryExecutionContext={"Database": db},
         WorkGroup=ATHENA_WORKGROUP,
         ResultConfiguration={"OutputLocation": ATHENA_OUTPUT_LOCATION},
     )
     qid = resp["QueryExecutionId"]
     _wait_for_query(qid)
-    rows, _ = _get_rows_raw(qid)
 
+    rows, _ = _get_rows_raw(qid)
     tables = [r[0] for r in rows if r and r[0]]
     return tables
 
@@ -138,16 +163,20 @@ async def describe_table(database: str, table: str) -> List[Dict[str, Any]]:
 
     Args:
         database: Athena database name
-        table: table name
+        table:    table name
     """
+    query = f"DESCRIBE {table}"
+    print(f"[mtb_athena] describe_table: {query} (db={database})")
+
     resp = athena.start_query_execution(
-        QueryString=f"DESCRIBE {table}",
+        QueryString=query,
         QueryExecutionContext={"Database": database},
         WorkGroup=ATHENA_WORKGROUP,
         ResultConfiguration={"OutputLocation": ATHENA_OUTPUT_LOCATION},
     )
     qid = resp["QueryExecutionId"]
     _wait_for_query(qid)
+
     rows, _ = _get_rows_raw(qid)
 
     result: List[Dict[str, Any]] = []
@@ -173,7 +202,7 @@ async def run_readonly_query(
 
     Args:
         database: Athena database name
-        sql: SQL query (must be read-only)
+        sql:      SQL query (must be read-only)
         max_rows: max number of rows to return (default 50)
     """
     lowered = sql.lower()
@@ -186,9 +215,8 @@ async def run_readonly_query(
     if not lowered.strip().startswith("select"):
         raise ValueError("Queries must start with SELECT for this demo.")
 
-    # Log SQL for debugging
     print(
-        f"[mtb_athena] Running query on {database} "
+        f"[mtb_athena] run_readonly_query on {database} "
         f"(max_rows={max_rows}):\n{sql}\n"
     )
 
@@ -200,17 +228,18 @@ async def run_readonly_query(
     )
     qid = resp["QueryExecutionId"]
 
-    # Wait with configurable timeout
     _wait_for_query(qid)
 
     rows, columns = _get_rows_raw(qid)
-
     rows = rows[:max_rows]
+
     return [dict(zip(columns, row)) for row in rows]
 
 
-# ---- Entry point ----
+# --------------------------------------------------------------------
+# Main entrypoint for MCP (STDIO transport)
+# --------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # STDIO transport so the MCP client (agent) can talk to this process.
+    print("[mtb_athena] Starting MCP server on stdio…")
     mcp.run(transport="stdio")
