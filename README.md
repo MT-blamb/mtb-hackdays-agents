@@ -67,21 +67,31 @@ uv pip install -r requirements.txt
 ## 📂 Project Structure
 
 ```
-.
-├── AthenaAssistant.png                     # Demo screenshot
-├── Dockerfile                              # Docker container for Streamlit app
-├── iam_trust_policy.json                   # EC2 trust policy for IAM role
-├── permissions_policy.json                 # Permissions policy for Athena/Bedrock
+mtb-hackdays-agents/
 ├── README.md
 ├── requirements.txt
-├── scenario1_single_server
+├── Dockerfile                # Docker container for Streamlit app
+├── streamlit_app.py          # Main Streamlit application
+├── AthenaAssistant.png       # Demo screenshot
+├── iam/                      # IAM configuration files
+│   ├── trust-policy.json     # EC2 trust policy for IAM role
+│   └── permissions-policy.json  # Permissions policy for Athena/Bedrock
+├── scenario1_single_server/  # Scenario 1: Baseline agent + local tool + doc MCP server
 │   ├── baseline_agent.py
-│   └── mtb_athena_agent.py
-├── scenario3_custom_server
-│   ├── mtb_athena_client.py                # NEW: Simple MCP client / smoke test
-│   ├── mtb_athena_server.py                # NEW: Athena MCP server (read-only)
-│   └── mtb_athena_strands_agent.py         # NEW: Strands Agent + Bedrock + Athena MCP
-└── streamlit_app.py                        # Main Streamlit application
+│   ├── agent_with_local_tool.py
+│   └── agent_with_doc_mcp.py
+├── scenario2_multi_server/   # Scenario 2: Multi-MCP orchestration
+│   └── multi_server_agent.py
+├── scenario3_custom_server/  # Scenario 3: Custom MCP servers
+│   ├── calculator_server.py      # Original calculator MCP example
+│   ├── calculator_client.py
+│   ├── mtb_athena_server.py      # NEW: Athena MCP server (read-only)
+│   ├── mtb_athena_client.py      # NEW: Simple MCP client / smoke test
+│   └── mtb_athena_strands_agent.py  # NEW: Strands Agent + Bedrock + Athena MCP
+├── kite_streamlit_app/       # Streamlit + Kite MCP demo
+│   └── streamlit_app.py
+└── utils/
+    └── streamlit_helpers.py
 ```
 
 ## 🚀 Quick Start: Streamlit Application
@@ -334,11 +344,37 @@ uvx --from awslabs.aws-documentation-mcp-server@latest awslabs.aws-documentation
 
 The agent examples in this repo demonstrate how to connect to those servers programmatically.
 
+## 🚀 SageMaker Unified Studio Integration
+
+### Vision: Packaged Athena Assistant for Data Scientists
+
+![SageMaker Unified Studio](SageMakerStudio.png)
+
+The **Moneytree Athena Assistant** demonstrates a powerful pattern that could be **pre-packaged and deployed within Amazon SageMaker Unified Studio** environments. This would provide data scientists and analysts with immediate access to natural language querying capabilities across their organization's data lake.
+
+### Value Proposition for SageMaker Unified Studio
+
+#### 🎯 **Immediate Time to Value**
+- **Zero setup friction**: Data scientists get instant access to Athena querying via natural language
+- **No SQL expertise required**: Junior analysts can explore data without learning complex SQL syntax
+- **Built-in best practices**: Pre-configured with security, performance, and cost optimization
+
+#### 🔒 **Enterprise Security & Governance**
+- **IAM integration**: Inherits existing SageMaker role-based permissions
+- **Read-only by design**: Prevents accidental data modification
+- **Audit trail**: All queries logged through CloudTrail for compliance
+- **Data lineage**: Integration with AWS Glue Data Catalog for governance
+
+#### 🛠️ **Seamless Workflow Integration**
+- **Feature discovery**: Helps data scientists discover relevant datasets for ML projects
+- **Data profiling**: Quick statistical summaries and data quality checks
+
 ## 📚 Learn More
 
 - [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
 - [Amazon Bedrock](https://aws.amazon.com/bedrock/)
 - [Strands (Python SDK)](https://github.com/strandslabs/strands)
+- [Amazon Sagemaker Unified Studio](https://aws.amazon.com/sagemaker/unified-studio/)
 
 ## 📜 License
 
