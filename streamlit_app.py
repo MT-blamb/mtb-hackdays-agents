@@ -3,8 +3,9 @@
 import os
 import re
 import sys
-
+import asyncio
 import traceback
+
 import pandas as pd
 import streamlit as st
 
@@ -15,16 +16,19 @@ from strands.agent import Agent
 from strands.models import BedrockModel
 from strands.tools.mcp import MCPClient
 
-from pathlib import Path
-from strands.types.exceptions import MCPClientInitializationError
+from chart_display_robust import render_chart_section
 
 
+st.set_page_config(
+    page_title="Moneytree Athena Assistant",
+    page_icon="🪙",
+    layout="wide",  # <- key bit
+)
 
 # --------------------------------------------------------------------
 # Config
 # --------------------------------------------------------------------
 
-# New default DB you requested
 DEFAULT_DB = os.getenv(
     "MTB_ATHENA_DEFAULT_DB",
     "lakehouse_omoikane_streaming_jp_production",
@@ -36,29 +40,18 @@ DEFAULT_DB = os.getenv(
 # --------------------------------------------------------------------
 
 def build_bedrock_model() -> BedrockModel:
-    """
-    Configure the Bedrock model that Strands uses.
-    Uses Haiku by default (works with on-demand in ap-northeast-1).
-
-    You can override with:
-      export MTB_BEDROCK_MODEL_ID="your-model-id"
-      export MTB_BEDROCK_INFERENCE_PROFILE_ARN="arn:aws:bedrock:ap-northeast-1:...:inference-profile/..."
-    """
     model_id = os.getenv(
         "MTB_BEDROCK_MODEL_ID",
         "anthropic.claude-3-haiku-20240307-v1:0",
     )
-
     inference_profile_arn = os.getenv("MTB_BEDROCK_INFERENCE_PROFILE_ARN")
     additional_request_fields = {}
 
     if inference_profile_arn:
-        # Avoid the “on-demand throughput isn’t supported” error for some models
         additional_request_fields["inferenceConfig"] = {
             "inferenceProfileArn": inference_profile_arn
         }
 
-    # NOTE: do NOT pass `region` here; BedrockModel doesn’t accept it.
     return BedrockModel(
         model_id=model_id,
         temperature=0.1,
@@ -66,50 +59,28 @@ def build_bedrock_model() -> BedrockModel:
         additional_request_fields=additional_request_fields,
     )
 
+
 # --------------------------------------------------------------------
 # Helpers for displaying agent output
 # --------------------------------------------------------------------
 
 def extract_sql_block(text: str) -> str | None:
-    """
-    Extract the first ```sql ... ``` block from the given text.
-    Returns just the SQL body, or None if no SQL block is found.
-    """
     if not text:
         return None
-
-    match = re.search(
-        r"```sql\s*(.*?)```",
-        text,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
+    match = re.search(r"```sql\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
     if not match:
         return None
-
-    sql_body = match.group(1).strip()
-    return sql_body or None
+    return match.group(1).strip() or None
 
 
 def parse_markdown_table_into_df(text: str) -> pd.DataFrame | None:
-    """
-    Look for the first markdown table in the text and return it as a DataFrame.
-
-    Example it can parse:
-
-    Company Name | Avg Total Compensation
-    --- | ---
-    Rakuten Card | 998,080,550
-    SMBC Card    | 870,562,703
-    """
     lines = text.splitlines()
     start = None
     end = None
 
-    # Find header line (starts with | and has at least one more |)
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("|") and "|" in stripped[1:]:
-            # Require next line to also look like a table row
             if i + 1 < len(lines) and lines[i + 1].strip().startswith("|"):
                 start = i
                 break
@@ -117,7 +88,6 @@ def parse_markdown_table_into_df(text: str) -> pd.DataFrame | None:
     if start is None:
         return None
 
-    # Find the end (first non-table line after start)
     for j in range(start + 1, len(lines)):
         if not lines[j].strip().startswith("|"):
             end = j
@@ -131,99 +101,50 @@ def parse_markdown_table_into_df(text: str) -> pd.DataFrame | None:
         return None
 
     header_cells = [c.strip() for c in table_lines[0].split("|")]
-
-    data_rows: list[list[str]] = []
+    data_rows = []
+    
     for row in table_lines[1:]:
         cells = [c.strip() for c in row.split("|")]
-
-        # Skip separator rows like "---" or ":---:"
         if all(set(c) <= {"-", ":"} for c in cells if c):
             continue
-
         if len(cells) != len(header_cells):
             continue
-
         data_rows.append(cells)
 
     if not data_rows:
         return None
 
     df = pd.DataFrame(data_rows, columns=header_cells)
-
-    # Try to convert numeric columns
     for col in df.columns:
         if df[col].dtype == "object":
             df[col] = df[col].str.replace(",", "", regex=False)
             df[col] = pd.to_numeric(df[col], errors="ignore")
-
     return df
 
 
 def parse_numbered_list_into_df(text: str) -> pd.DataFrame | None:
-    """
-    Parse lines like:
-    1. Rakuten Card (998,080,550 transactions)
-    2. SMBC Card (870,562,703 transactions)
-
-    into a DataFrame with columns: label, value.
-    """
     pattern = r"^\s*\d+\.\s*([^(]+?)\s*\(([\d,]+)\s+\w+"
-    rows: list[dict[str, object]] = []
-
+    rows = []
     for line in text.splitlines():
         m = re.match(pattern, line)
         if not m:
             continue
-
         label = m.group(1).strip()
         num_str = m.group(2).replace(",", "")
         try:
             value = int(num_str)
         except ValueError:
             continue
-
         rows.append({"label": label, "value": value})
-
-    if not rows:
-        return None
-
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows) if rows else None
 
 
 # --------------------------------------------------------------------
-# Agent / MCP wiring (init_agent)
+# System prompt
 # --------------------------------------------------------------------
 
-def init_agent():
-    # Reuse existing agent if we already have one
-    if "agent" in st.session_state and st.session_state["agent"] is not None:
-        return st.session_state["agent"]
-
-    # Also avoid restarting if we know initialization failed earlier
-    if st.session_state.get("agent_init_failed"):
-        return None
-
-    st.write("🔌 Initializing Athena MCP client & Strands agent…")
-
-    # Resolve path to the server script relative to this file
-    here = os.path.dirname(os.path.abspath(__file__))
-    server_script = os.path.join(here, "scenario3_custom_server", "mtb_athena_server.py")
-
-    server_params = StdioServerParameters(
-        command=sys.executable,
-        args=[server_script],
-        env=dict(os.environ),
-    )
-
-    client = MCPClient(lambda: stdio_client(server_params))
-
-    try:
-        client.start()  # same as client.__enter__(), but explicit
-        tools = client.list_tools_sync()
-
-        model = build_bedrock_model()
-
-        system_prompt = f"""
+def get_system_prompt() -> str:
+    return f"""You are the Moneytree Athena assistant.
 You are the Moneytree Athena assistant.
 
 ENVIRONMENT
@@ -396,51 +317,134 @@ WHEN YOU ARE UNSURE
 * When you are uncertain, prefer smaller, safer queries and clearly label any assumptions.
 """
 
+
+# --------------------------------------------------------------------
+# MCP config (reusable)
+# --------------------------------------------------------------------
+
+def get_mcp_server_params() -> StdioServerParameters:
+    """Get the MCP server parameters."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    server_script = os.path.join(here, "scenario3_custom_server", "mtb_athena_server.py")
+    
+    return StdioServerParameters(
+        command=sys.executable,
+        args=[server_script],
+        env=dict(os.environ),
+    )
+
+
+# --------------------------------------------------------------------
+# Run agent with MCP context (KEY FIX)
+# --------------------------------------------------------------------
+
+def build_history_context(
+    question: str,
+    history: list[dict],
+    max_turns: int = 3,
+) -> tuple[str, int]:
+    """
+    Build a single user prompt that includes the last few Q&A turns as context.
+
+    Returns:
+        (full_prompt, turns_used)
+    """
+    if not history:
+        return question.strip(), 0  # first question, nothing to prepend
+
+    chunks: list[str] = []
+    chunks.append(
+        "You are answering a follow-up question. "
+        "Here are the last interactions for context:\n"
+    )
+
+    recent = history[-max_turns:]
+    turns_used = 0
+
+    for item in recent:
+        q = item.get("question", "").strip()
+        a = item.get("answer", "").strip()
+        if not q and not a:
+            continue
+
+        turns_used += 1
+        chunks.append("Previous user question:\n" + q)
+        chunks.append("\nYour previous answer:\n" + a)
+        chunks.append("\n---\n")
+
+    chunks.append(
+        "Now answer the new question below, taking the above context into account.\n"
+        "New question:\n"
+    )
+    chunks.append(question.strip())
+
+    return "\n".join(chunks), turns_used
+
+
+def run_agent_query(question: str, history: list[dict]) -> str:
+    """
+    Run the agent with MCP tools and conversation history.
+    We pass history as plain text context, not via messages=.
+    """
+    server_params = get_mcp_server_params()
+    client = MCPClient(lambda: stdio_client(server_params))
+
+    try:
+        client.start()
+        tools = client.list_tools_sync()
+
+        model = build_bedrock_model()
+        system_prompt = get_system_prompt()
+
         agent = Agent(
             model=model,
             system_prompt=system_prompt,
             tools=tools,
         )
 
-        # Only store these if everything succeeded
-        st.session_state["agent"] = agent
-        st.session_state["mcp_client"] = client
-        st.session_state["agent_init_failed"] = False
-        return agent
+        # Build user prompt that includes last few turns as plain-text context
+        full_prompt, turns_used = build_history_context(question, history)
 
-    except Exception as e:
-        st.session_state["agent"] = None
-        st.session_state["mcp_client"] = None
-        st.session_state["agent_init_failed"] = True
-        st.session_state["agent_init_error"] = traceback.format_exc()
+        # Remember how many turns were used so UI can show an indicator
+        st.session_state["last_context_turns"] = turns_used
 
-        st.error("Failed to start Athena MCP server. See details below:\n")
-        st.code(st.session_state["agent_init_error"], language="text")
-        return None
+        # Single-call Agent: Strands wraps this as a user message internally
+        result = agent(full_prompt)
+        return str(result)
+
+    finally:
+        try:
+            client.stop()
+        except Exception:
+            pass
+
 
 # --------------------------------------------------------------------
 # Streamlit UI
 # --------------------------------------------------------------------
 
 def main() -> None:
-    st.set_page_config(
-        page_title="Moneytree Athena Assistant",
-        page_icon="🪙",
-        layout="wide",
-    )
-
     st.title("🪙 Moneytree Athena Assistant")
     st.caption(
-        f"Query *read-only* Athena data from <span style='color: #32CD32; font-weight: bold;'>{DEFAULT_DB}</span> via an LLM + MCP + Strands. "
+        f"Query *read-only* Athena data from "
+        f"<span style='color: #32CD32; font-weight: bold;'>{DEFAULT_DB}</span> "
+        "via an LLM + MCP + Strands. "
         "Backed by Amazon Bedrock; no data leaves AWS.",
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-    # ---------------- Sidebar: settings & example questions ----------------
+    # Tiny context indicator
+    ctx_turns = st.session_state.get("last_context_turns", 0)
+    if ctx_turns and ctx_turns > 0:
+        st.caption(f"🧠 Using last {ctx_turns} conversation turn(s) as context.")
+    else:
+        st.caption("🧠 No prior conversation context used for the next question.")
+
+
+    # ---------------- Sidebar ----------------
 
     st.sidebar.title("⚙️ Settings")
 
-    # Saved/example prompts
     example_questions = [
         "Show me 5 wifi transactions",
         "Which tables mention salary?",
@@ -456,7 +460,6 @@ def main() -> None:
         index=0,
     )
 
-    # SQL inspector toggle
     show_sql_inspector = st.sidebar.checkbox(
         "Show last SQL query",
         value=True,
@@ -470,57 +473,36 @@ def main() -> None:
         "- The app runs entirely against your AWS account & IAM role.\n"
         "- Bedrock keeps your data in-region; prompts & results stay in AWS."
     )
+    if st.sidebar.button("🧹 Clear conversation & context"):
+      st.session_state["history"] = []
+      st.session_state["last_sql"] = None
+      st.session_state["last_chart_df"] = None
+      st.session_state["chart_x_col"] = None
+      st.session_state["chart_y_col"] = None
+      st.session_state["last_context_turns"] = 0
 
     # ---------------- Session state init ----------------
 
-    if "agent" not in st.session_state:
-        st.session_state["agent"] = None
-
     if "history" not in st.session_state:
-        # each entry: {"question": str, "answer": str}
         st.session_state["history"] = []
-
     if "last_sql" not in st.session_state:
         st.session_state["last_sql"] = None
-
-    if "init_error" not in st.session_state:
-        st.session_state["init_error"] = None
-
     if "last_chart_df" not in st.session_state:
         st.session_state["last_chart_df"] = None
-
     if "chart_x_col" not in st.session_state:
         st.session_state["chart_x_col"] = None
-
     if "chart_y_col" not in st.session_state:
         st.session_state["chart_y_col"] = None
+    if "last_context_turns" not in st.session_state:
+        st.session_state["last_context_turns"] = 0
 
-    # ---------------- Initialize agent (once) ----------------
-
-    if st.session_state["agent"] is None and st.session_state["init_error"] is None:
-        with st.spinner("🔌 Initializing Athena MCP client & Strands agent…"):
-            try:
-                agent = init_agent()
-                st.session_state["agent"] = agent
-            except Exception:
-                # Capture full traceback so we don't keep retrying every rerun
-                st.session_state["init_error"] = traceback.format_exc()
-
-    if st.session_state["init_error"] is not None:
-        st.error("Failed to start Athena MCP server / Strands agent.")
-        st.exception(Exception(st.session_state["init_error"]))
-        st.stop()
-
-    agent = st.session_state["agent"]
-
-    # ---------------- Main layout: input left, history + SQL right ----------------
+    # ---------------- Main layout ----------------
 
     col_input, col_output = st.columns([1, 2])
 
     with col_input:
         st.subheader("📝 Ask a question")
 
-        # If the user picked an example, pre-fill the text area
         default_question = ""
         if selected_example != "(none)":
             default_question = selected_example
@@ -538,7 +520,6 @@ def main() -> None:
     with col_output:
         st.subheader("📜 Conversation")
 
-        # Show past Q&A
         for item in st.session_state["history"]:
             st.markdown(f"**You:** {item['question']}")
             st.markdown(f"**Assistant:**\n\n{item['answer']}")
@@ -549,30 +530,36 @@ def main() -> None:
     if ask_button and question.strip():
         with st.spinner("Thinking… running tools & queries against Athena…"):
             try:
-                result = agent(question)
-                answer_text = str(result).strip()
+                # Run agent with history-aware context
+                answer_text = run_agent_query(
+                    question,
+                    st.session_state["history"],
+                )
             except Exception as e:
-                answer_text = f"❌ Error from agent: {e}"
+                # If something blows up, reset context turns for this answer
+                st.session_state["last_context_turns"] = 0
+                answer_text = (
+                    f"❌ Error from agent: {e}\n\n"
+                    f"```\n{traceback.format_exc()}\n```"
+                )
 
-        # Store in history
+        # Append this turn to history
         st.session_state["history"].append(
             {"question": question, "answer": answer_text}
         )
 
-        # Try to extract SQL from the answer & remember it
+        # Try to extract the SQL block (for the inspector)
         sql = extract_sql_block(answer_text)
         if sql:
             st.session_state["last_sql"] = sql
 
-        # Try to extract tabular data for charting:
+        # Try to extract tabular data for charts
         df = parse_markdown_table_into_df(answer_text)
         if df is None:
             df = parse_numbered_list_into_df(answer_text)
 
         if df is not None and not df.empty:
             st.session_state["last_chart_df"] = df
-
-            # Pick default x/y columns (first col as label, first numeric col as value)
             numeric_cols = [
                 c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])
             ]
@@ -587,7 +574,7 @@ def main() -> None:
             st.session_state["chart_x_col"] = None
             st.session_state["chart_y_col"] = None
 
-        # Force a rerun so the right column shows the new entry immediately
+        # Re-run to render the new history / SQL / chart
         st.rerun()
 
     # ---------------- SQL Query Inspector ----------------
@@ -599,53 +586,14 @@ def main() -> None:
         last_sql = st.session_state.get("last_sql")
         if last_sql:
             st.code(last_sql, language="sql")
-            st.caption(
-                "Copy-paste this into the Athena console to debug or iterate manually."
-            )
+            st.caption("Copy-paste this into the Athena console to debug or iterate manually.")
         else:
-            st.info(
-                "No SQL captured yet. Ask a question that causes the agent to run a query "
-                "and include a ```sql ... ``` block in its answer."
-            )
+            st.info("No SQL captured yet. Ask a question that causes the agent to run a query.")
 
-    # ---------------- Chart section (if we have aggregated data) ----------------
+    # ---------------- Chart section ----------------
 
-    st.markdown("---")
-    st.subheader("📊 Latest aggregated result (chart)")
+    render_chart_section()
 
-    chart_df = st.session_state.get("last_chart_df")
 
-    if chart_df is not None and not chart_df.empty:
-        x_col = st.session_state.get("chart_x_col") or chart_df.columns[0]
-
-        # Pick y_col: stored in state or first numeric column
-        y_col = st.session_state.get("chart_y_col")
-        if y_col is None or y_col not in chart_df.columns:
-            numeric_cols = [
-                c for c in chart_df.columns
-                if pd.api.types.is_numeric_dtype(chart_df[c])
-            ]
-            y_col = numeric_cols[0] if numeric_cols else None
-
-        if y_col is not None:
-            st.caption(f"Plotting **{y_col}** by **{x_col}**")
-            # Use index = x axis labels
-            st.bar_chart(chart_df.set_index(x_col)[y_col])
-        else:
-            st.info(
-                "I found a table, but couldn't identify a numeric column to plot. "
-                "Showing the raw table instead."
-            )
-
-        st.dataframe(chart_df, use_container_width=True)
-    else:
-        st.info(
-            "Ask a question that returns a small aggregated result (e.g. 'top 5', "
-            "grouped counts). If the assistant includes a markdown table or a "
-            "numbered list like '1. Name (123)', I'll plot it here."
-        )
-
-# --------------------------------------------------------------------
 if __name__ == "__main__":
     main()
-# --------------------------------------------------------------------
